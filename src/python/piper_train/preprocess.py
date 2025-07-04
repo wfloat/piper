@@ -31,6 +31,205 @@ _DIR = Path(__file__).parent
 _VERSION = (_DIR / "VERSION").read_text(encoding="utf-8").strip()
 _LOGGER = logging.getLogger("preprocess")
 
+vad_phonemes = ["⓪", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨"]
+
+EMOTIONS = [
+    "Helpless",
+    "Frightened",
+    "Overwhelmed",
+    "Worried",
+    "Inadequate",
+    "Inferior",
+    "Worthless",
+    "Insignificant",
+    "Excluded",
+    "Persecuted",
+    "Nervous",
+    "Exposed",
+    "Betrayed",
+    "Resentful",
+    "Disrespected",
+    "Ridiculed",
+    "Indignant",
+    "Violated",
+    "Furious",
+    "Jealous",
+    "Provoked",
+    "Hostile",
+    "Infuriated",
+    "Annoyed",
+    "Withdrawn",
+    "Numb",
+    "Skeptical",
+    "Dismissive",
+    "Judgemental",
+    "Embarrassed",
+    "Appalled",
+    "Revolted",
+    "Nauseated",
+    "Detestable",
+    "Horrified",
+    "Hesitant",
+    "Disappointed",
+    "Empty",
+    "Remorseful",
+    "Ashamed",
+    "Powerless",
+    "Grief",
+    "Fragile",
+    "Victimized",
+    "Abandoned",
+    "Isolated",
+    "Inspired",
+    "Hopeful",
+    "Intimate",
+    "Sensitive",
+    "Thankful",
+    "Loving",
+    "Creative",
+    "Courageous",
+    "Valued",
+    "Respected",
+    "Confident",
+    "Successful",
+    "Inquisitive",
+    "Curious",
+    "Joyful",
+    "Free",
+    "Cheeky",
+    "Aroused",
+    "Energetic",
+    "Eager",
+    "Awe",
+    "Astonished",
+    "Perplexed",
+    "Disillusioned",
+    "Dismayed",
+    "Shocked",
+    "Unfocussed",
+    "Sleepy",
+    "Unmoored",
+    "Rushed",
+    "Pressured",
+    "Apathetic",
+    "Indifferent",
+]
+
+emotion_to_emoji = {
+    "Helpless": "🙇",
+    "Frightened": "😱",
+    "Overwhelmed": "😵",
+    "Worried": "😟",
+    "Inadequate": "😖",
+    "Inferior": "😔",
+    "Worthless": "🗑",
+    "Insignificant": "🐜",
+    "Excluded": "🚪",
+    "Persecuted": "🎯",
+    "Nervous": "😬",
+    "Exposed": "🔦",
+    "Betrayed": "🗡",
+    "Resentful": "😤",
+    "Disrespected": "🙅",
+    "Ridiculed": "😝",
+    "Indignant": "😠",
+    "Violated": "🔓",
+    "Furious": "🤬",
+    "Jealous": "🟢",
+    "Provoked": "📛",
+    "Hostile": "👿",
+    "Infuriated": "😡",
+    "Annoyed": "😒",
+    "Withdrawn": "🤐",
+    "Numb": "🧊",
+    "Skeptical": "🤨",
+    "Dismissive": "🙄",
+    "Judgemental": "⚖",
+    "Embarrassed": "😳",
+    "Appalled": "😰",
+    "Revolted": "🤢",
+    "Nauseated": "🤮",
+    "Detestable": "💩",
+    "Horrified": "🧟",
+    "Hesitant": "🤔",
+    "Disappointed": "😞",
+    "Empty": "🕳",
+    "Remorseful": "😥",
+    "Ashamed": "😣",
+    "Powerless": "😩",
+    "Grief": "😢",
+    "Fragile": "📦",
+    "Victimized": "🤕",
+    "Abandoned": "🏚",
+    "Isolated": "🏝",
+    "Inspired": "💡",
+    "Hopeful": "🌈",
+    "Intimate": "💞",
+    "Sensitive": "🌸",
+    "Thankful": "🙏",
+    "Loving": "❤",
+    "Creative": "🎨",
+    "Courageous": "🦁",
+    "Valued": "💎",
+    "Respected": "🛡",
+    "Confident": "😎",
+    "Successful": "🏆",
+    "Inquisitive": "🧐",
+    "Curious": "🐱",
+    "Joyful": "😄",
+    "Free": "🕊",
+    "Cheeky": "😜",
+    "Aroused": "🔥",
+    "Energetic": "⚡",
+    "Eager": "🤩",
+    "Awe": "🤯",
+    "Astonished": "😲",
+    "Perplexed": "😕",
+    "Disillusioned": "🥀",
+    "Dismayed": "😧",
+    "Shocked": "😮",
+    "Unfocussed": "🌀",
+    "Sleepy": "😴",
+    "Unmoored": "🌊",
+    "Rushed": "⏱",
+    "Pressured": "⛓",
+    "Apathetic": "😑",
+    "Indifferent": "🤷",
+}
+
+
+def is_single_codepoint(char: str) -> bool:
+    return len(char) == 1 and len(char.encode("utf-32-le")) == 4
+
+
+emoji_counts = Counter(emotion_to_emoji.values())
+duplicates = {emoji: count for emoji, count in emoji_counts.items() if count > 1}
+mapped_emotions = set(emotion_to_emoji.keys())
+expected_emotions = set(EMOTIONS)
+missing = expected_emotions - mapped_emotions
+extra = mapped_emotions - expected_emotions
+
+assert not duplicates, f"Duplicate emojis found: {duplicates}"
+assert not missing, f"Missing emotions: {missing}"
+assert not extra, f"Extra emotions: {extra}"
+for emotion, emoji in emotion_to_emoji.items():
+    assert is_single_codepoint(
+        emoji
+    ), f"Emoji for emotion '{emotion}' is not a single codepoint: {emoji}"
+
+
+def load_rejected_samples(*csv_paths: Path):
+    rejected = set()
+    for path in csv_paths:
+        if not path.exists():
+            continue
+        with open(path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f, delimiter="|")
+            for row in reader:
+                if row.get("is_approved", "").strip().lower() == "n":
+                    rejected.add(row["id"])
+    return rejected
+
 
 class PhonemeType(str, Enum):
     ESPEAK = "espeak"
@@ -131,6 +330,12 @@ def main() -> None:
     )
     args.cache_dir.mkdir(parents=True, exist_ok=True)
 
+    global rejected_samples
+    rejected_samples = load_rejected_samples(
+        Path("/home/containeruser/wfloat/dataset/_samples_dashes.csv"),
+        Path("/home/containeruser/wfloat/dataset/_samples_expressive.csv"),
+    )
+
     if args.dataset_format == "mycroft":
         make_dataset = mycroft_dataset
     else:
@@ -165,6 +370,35 @@ def main() -> None:
     audio_quality = args.audio_quality or args.output_dir.name
     dataset_name = args.dataset_name or args.output_dir.parent.name
 
+    global codepoints_map
+    codepoints_map = get_espeak_map()
+    custom_phonemes = set(emotion_to_emoji.values()).union(vad_phonemes)
+    codepoint_phonemes = codepoints_map.keys()
+    duplicate_codepoints = custom_phonemes & codepoint_phonemes
+    assert (
+        not duplicate_codepoints
+    ), f"Tried to add custom phonemes to the codepoints map that are already reserved by Espeak: {duplicate_codepoints}"
+
+    existing_ids = {i for v in codepoints_map.values() for i in v}
+    custom_id = max(existing_ids) + 1
+    codepoints_map["‽"] = [custom_id]
+    custom_id += 1
+
+    max_phonemes = get_max_phonemes()
+    for custom_phoneme in set(emotion_to_emoji.values()):
+        assert (
+            custom_id < max_phonemes
+        ), f"Too many phonemes. Attempted to add custom phonemes beyond the current max: {max_phonemes}."
+        codepoints_map[custom_phoneme] = [custom_id]
+        custom_id += 1
+
+    for custom_phoneme in vad_phonemes:
+        assert (
+            custom_id < max_phonemes
+        ), f"Too many phonemes. Attempted to add custom phonemes beyond the current max: {max_phonemes}."
+        codepoints_map[custom_phoneme] = [custom_id]
+        custom_id += 1
+
     with open(args.output_dir / "config.json", "w", encoding="utf-8") as config_file:
         json.dump(
             {
@@ -182,9 +416,11 @@ def main() -> None:
                 "inference": {"noise_scale": 0.667, "length_scale": 1, "noise_w": 0.8},
                 "phoneme_type": args.phoneme_type.value,
                 "phoneme_map": {},
-                "phoneme_id_map": get_codepoints_map()[args.language]
-                if args.phoneme_type == PhonemeType.TEXT
-                else get_espeak_map(),
+                "phoneme_id_map": (
+                    get_codepoints_map()[args.language]
+                    if args.phoneme_type == PhonemeType.TEXT
+                    else codepoints_map
+                ),
                 "num_symbols": get_max_phonemes(),
                 "num_speakers": len(speaker_counts),
                 "speaker_id_map": speaker_ids,
@@ -281,6 +517,18 @@ def get_text_casing(casing: str):
     return lambda s: s
 
 
+def vad_phonemize(vad_str: str):
+    return [vad_phonemes[int(char)] for char in vad_str]
+
+
+def vad_phoneme_ids(vad_str: str):
+    phonemes = [vad_phonemes[int(char)] for char in vad_str]
+    ids = []
+    for phoneme in phonemes:
+        ids.append(codepoints_map[phoneme][0])
+    return ids
+
+
 def phonemize_batch_espeak(
     args: argparse.Namespace, queue_in: JoinableQueue, queue_out: Queue
 ):
@@ -299,18 +547,70 @@ def phonemize_batch_espeak(
                         utt.text = tashkeel_run(utt.text)
 
                     _LOGGER.debug(utt)
-                    all_phonemes = phonemize_espeak(casing(utt.text), args.language)
+                    utt_parts = utt.text.split(maxsplit=4)
+                    utt_emotion = utt_parts[0]
+                    utt_valence = utt_parts[1]
+                    utt_arousal = utt_parts[2]
+                    utt_dominance = utt_parts[3]
+                    utt_text = utt_parts[4]
+
+                    has_interrobang = False
+                    if "?!" in utt_text:
+                        utt_text = utt_text.replace("?!", "")
+                        has_interrobang = True
+
+                    assert utt_emotion in EMOTIONS, f"Invalid emotion: {utt_emotion}"
+                    all_phonemes = phonemize_espeak(casing(utt_text), args.language)
 
                     # Flatten
-                    utt.phonemes = [
+                    utt_text_phonemes = [
                         phoneme
                         for sentence_phonemes in all_phonemes
                         for phoneme in sentence_phonemes
                     ]
-                    utt.phoneme_ids = phoneme_ids_espeak(
-                        utt.phonemes,
+
+                    emotion_phoneme = emotion_to_emoji[utt_emotion]
+
+                    utt.phonemes = [
+                        emotion_phoneme,
+                        " ",
+                        *vad_phonemize(utt_valence),
+                        " ",
+                        *vad_phonemize(utt_arousal),
+                        " ",
+                        *vad_phonemize(utt_dominance),
+                        " ",
+                        *utt_text_phonemes,
+                    ]
+                    if has_interrobang:
+                        utt.phonemes.append("‽")
+
+                    phoneme_ids = phoneme_ids_espeak(
+                        utt_text_phonemes,
                         missing_phonemes=utt.missing_phonemes,
                     )
+                    space_id = codepoints_map[" "][0]
+                    emotion_id = codepoints_map[emotion_phoneme]
+
+                    # utt.phoneme_ids = phoneme_ids_espeak(
+                    #     utt.phonemes,
+                    #     missing_phonemes=utt.missing_phonemes,
+                    # )
+                    utt.phoneme_ids = [
+                        emotion_id[0],
+                        space_id,
+                        *vad_phoneme_ids(utt_valence),
+                        space_id,
+                        *vad_phoneme_ids(utt_arousal),
+                        space_id,
+                        *vad_phoneme_ids(utt_dominance),
+                        space_id,
+                        *phoneme_ids,
+                    ]
+                    if has_interrobang:
+                        interrobang_id = codepoints_map["‽"][0]
+                        utt.phoneme_ids.insert(-1, interrobang_id)
+
                     if not args.skip_audio:
                         utt.audio_norm_path, utt.audio_spec_path = cache_norm_audio(
                             utt.audio_path,
@@ -451,6 +751,9 @@ def ljspeech_dataset(args: argparse.Namespace) -> Iterable[Utterance]:
                 if wav_path.stat().st_size == 0:
                     _LOGGER.warning("Empty file: %s", wav_path)
                     continue
+
+            if filename in rejected_samples:
+                continue
 
             yield Utterance(
                 text=text, audio_path=wav_path, speaker=speaker, speaker_id=speaker_id
