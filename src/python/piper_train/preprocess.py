@@ -13,6 +13,7 @@ from enum import Enum
 from multiprocessing import JoinableQueue, Process, Queue
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+import random
 
 from piper_phonemize import (
     phonemize_espeak,
@@ -204,6 +205,7 @@ emotion_to_emoji = {
     # "Apathetic": "😑",
     # "Indifferent": "🤷",
 }
+emoji_to_emotion = {v: k for k, v in emotion_to_emoji.items()}
 
 
 def is_single_codepoint(char: str) -> bool:
@@ -309,6 +311,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--debug", action="store_true", help="Print DEBUG messages to the console"
+    )
+    parser.add_argument(
+        "--test-count",
+        type=int,
+        default=0,
+        help="Amount of samples to reserve per emotion for each speaker for a test dataset (as test_dataset.json)",
     )
     args = parser.parse_args()
 
@@ -460,40 +468,86 @@ def main() -> None:
     _LOGGER.info(
         "Processing %s utterance(s) with %s worker(s)", num_utterances, args.max_workers
     )
+
+    utt_dicts = []
+
+    # with open(args.output_dir / "dataset.jsonl", "w", encoding="utf-8") as dataset_file:
+    for utt_batch in batched(
+        make_dataset(args),
+        batch_size,
+    ):
+        queue_in.put(utt_batch)
+
+    _LOGGER.debug("Waiting for jobs to finish")
+    missing_phonemes: "Counter[str]" = Counter()
+    for _ in range(num_utterances):
+        utt = queue_out.get()
+        if utt is not None:
+            if utt.speaker is not None:
+                utt.speaker_id = speaker_ids[utt.speaker]
+
+            utt_dict = dataclasses.asdict(utt)
+            utt_dict.pop("missing_phonemes")
+
+            # # JSONL
+            # json.dump(
+            #     utt_dict,
+            #     dataset_file,
+            #     ensure_ascii=False,
+            #     cls=PathEncoder,
+            # )
+            # print("", file=dataset_file)
+            utt_dicts.append(utt_dict)
+
+            missing_phonemes.update(utt.missing_phonemes)
+
+    random.shuffle(utt_dicts)
+
+    test_dataset = {
+        name: {emoji: [] for emoji in emoji_to_emotion} for name in SPEAKER_IDS
+    }
+
+    train_dataset = []
+
+    for utt_dict in utt_dicts:
+        speaker = utt_dict["speaker"]
+        emotion_phoneme = utt_dict["phonemes"][0]
+
+        if len(test_dataset[speaker][emotion_phoneme]) < args.test_count:
+            test_dataset[speaker][emotion_phoneme].append(utt_dict)
+        else:
+            train_dataset.append(utt_dict)
+
     with open(args.output_dir / "dataset.jsonl", "w", encoding="utf-8") as dataset_file:
-        for utt_batch in batched(
-            make_dataset(args),
-            batch_size,
-        ):
-            queue_in.put(utt_batch)
+        for utt_dict in train_dataset:
+            json.dump(
+                utt_dict,
+                dataset_file,
+                ensure_ascii=False,
+                cls=PathEncoder,
+            )
+            print("", file=dataset_file)
 
-        _LOGGER.debug("Waiting for jobs to finish")
-        missing_phonemes: "Counter[str]" = Counter()
-        for _ in range(num_utterances):
-            utt = queue_out.get()
-            if utt is not None:
-                if utt.speaker is not None:
-                    utt.speaker_id = speaker_ids[utt.speaker]
+    if args.test_count > 0:
+        with open(
+            args.output_dir / "test_dataset.jsonl", "w", encoding="utf-8"
+        ) as dataset_file:
+            for speaker, emotion_samples in test_dataset.items():
+                for emotion, samples in emotion_samples.items():
+                    for sample in samples:
+                        json.dump(
+                            sample,
+                            dataset_file,
+                            ensure_ascii=False,
+                            cls=PathEncoder,
+                        )
+                        print("", file=dataset_file)
 
-                utt_dict = dataclasses.asdict(utt)
-                utt_dict.pop("missing_phonemes")
+    if missing_phonemes:
+        for phoneme, count in missing_phonemes.most_common():
+            _LOGGER.warning("Missing %s (%s)", phoneme, count)
 
-                # JSONL
-                json.dump(
-                    utt_dict,
-                    dataset_file,
-                    ensure_ascii=False,
-                    cls=PathEncoder,
-                )
-                print("", file=dataset_file)
-
-                missing_phonemes.update(utt.missing_phonemes)
-
-        if missing_phonemes:
-            for phoneme, count in missing_phonemes.most_common():
-                _LOGGER.warning("Missing %s (%s)", phoneme, count)
-
-            _LOGGER.warning("Missing %s phoneme(s)", len(missing_phonemes))
+        _LOGGER.warning("Missing %s phoneme(s)", len(missing_phonemes))
 
     # Signal workers to stop
     for proc in processes:
