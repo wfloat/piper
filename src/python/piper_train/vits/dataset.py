@@ -44,6 +44,15 @@ class Batch:
     speaker_ids: Optional[LongTensor] = None
 
 
+def randomize_vad_digits(vad_digits: str) -> str:
+    vad = int(vad_digits)
+    random_choice = random.choice([-2, -1, 0, 1, 2])
+    vad = vad + random_choice
+    vad = max(0, vad)
+    vad_digits = str(vad).zfill(3)
+    return vad_digits
+
+
 class PiperDataset(Dataset):
     """
     Dataset format:
@@ -75,13 +84,64 @@ class PiperDataset(Dataset):
 
     def __getitem__(self, idx) -> UtteranceTensors:
         utt = self.utterances[idx]
+        phoneme_ids_to_digit = {
+            174: 0,
+            175: 1,
+            176: 2,
+            177: 3,
+            178: 4,
+            179: 5,
+            180: 6,
+            181: 7,
+            182: 8,
+            183: 9,
+        }
+        digits_to_phoneme_id = {v: k for k, v in phoneme_ids_to_digit.items()}
+        phoneme_ids = utt.phoneme_ids.copy()
+
+        valence_digits = "".join(
+            [
+                str(phoneme_ids_to_digit[utt.phoneme_ids[1]]),
+                str(phoneme_ids_to_digit[utt.phoneme_ids[2]]),
+                str(phoneme_ids_to_digit[utt.phoneme_ids[3]]),
+            ]
+        )
+        valence_digits = randomize_vad_digits(valence_digits)
+        phoneme_ids[1] = digits_to_phoneme_id[int(valence_digits[0])]
+        phoneme_ids[2] = digits_to_phoneme_id[int(valence_digits[1])]
+        phoneme_ids[3] = digits_to_phoneme_id[int(valence_digits[2])]
+
+        arousal_digits = "".join(
+            [
+                str(phoneme_ids_to_digit[utt.phoneme_ids[4]]),
+                str(phoneme_ids_to_digit[utt.phoneme_ids[5]]),
+                str(phoneme_ids_to_digit[utt.phoneme_ids[6]]),
+            ]
+        )
+        arousal_digits = randomize_vad_digits(arousal_digits)
+        phoneme_ids[4] = digits_to_phoneme_id[int(arousal_digits[0])]
+        phoneme_ids[5] = digits_to_phoneme_id[int(arousal_digits[1])]
+        phoneme_ids[6] = digits_to_phoneme_id[int(arousal_digits[2])]
+
+        dominance_digits = "".join(
+            [
+                str(phoneme_ids_to_digit[utt.phoneme_ids[7]]),
+                str(phoneme_ids_to_digit[utt.phoneme_ids[8]]),
+                str(phoneme_ids_to_digit[utt.phoneme_ids[9]]),
+            ]
+        )
+        dominance_digits = randomize_vad_digits(dominance_digits)
+        phoneme_ids[7] = digits_to_phoneme_id[int(dominance_digits[0])]
+        phoneme_ids[8] = digits_to_phoneme_id[int(dominance_digits[1])]
+        phoneme_ids[9] = digits_to_phoneme_id[int(dominance_digits[2])]
+
         return UtteranceTensors(
-            phoneme_ids=LongTensor(utt.phoneme_ids),
+            phoneme_ids=LongTensor(phoneme_ids),
             audio_norm=torch.load(utt.audio_norm_path),
             spectrogram=torch.load(utt.audio_spec_path),
-            speaker_id=LongTensor([utt.speaker_id])
-            if utt.speaker_id is not None
-            else None,
+            speaker_id=(
+                LongTensor([utt.speaker_id]) if utt.speaker_id is not None else None
+            ),
             text=utt.text,
         )
 
