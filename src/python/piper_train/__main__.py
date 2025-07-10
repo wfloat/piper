@@ -59,7 +59,12 @@ def main():
 
     trainer = Trainer.from_argparse_args(args)
     if args.checkpoint_epochs is not None:
-        trainer.callbacks = [ModelCheckpoint(every_n_epochs=args.checkpoint_epochs)]
+        trainer.callbacks = [
+            ModelCheckpoint(
+                every_n_epochs=args.checkpoint_epochs,
+                save_top_k=-1,  # Save all checkpoints
+            )
+        ]
         _LOGGER.debug(
             "Checkpoints will be saved every %s epoch(s)", args.checkpoint_epochs
         )

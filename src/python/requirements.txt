@@ -6,3 +6,4 @@ onnxruntime>=1.11.0
 pytorch-lightning~=1.7.0
 torch>=1.11.0,<2
 torchmetrics==0.9.3
+fastapi[standard]

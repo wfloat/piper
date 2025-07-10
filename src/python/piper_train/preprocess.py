@@ -232,7 +232,7 @@ def load_rejected_samples(*csv_paths: Path):
     rejected = set()
     for path in csv_paths:
         if not path.exists():
-            continue
+            raise FileNotFoundError(f"Missing file: {path}")
         with open(path, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f, delimiter="|")
             for row in reader:
@@ -348,8 +348,8 @@ def main() -> None:
 
     global rejected_samples
     rejected_samples = load_rejected_samples(
-        Path("/home/containeruser/wfloat/dataset/_samples_dashes.csv"),
-        Path("/home/containeruser/wfloat/dataset/_samples_expressive.csv"),
+        Path(os.path.join(args.input_dir, "_samples_dashes.csv")),
+        Path(os.path.join(args.input_dir, "_samples_expressive.csv")),
     )
 
     if args.dataset_format == "mycroft":
