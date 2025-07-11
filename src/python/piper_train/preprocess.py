@@ -390,23 +390,42 @@ def main() -> None:
         not duplicate_codepoints
     ), f"Tried to add custom phonemes to the codepoints map that are already reserved by Espeak: {duplicate_codepoints}"
 
+    # Predefined, fixed emoji → ID mapping
+    fixed_emoji_ids = {
+        "🌈": [158],
+        "😄": [159],
+        "😞": [160],
+        "😵": [161],
+        "😒": [162],
+        "😎": [163],
+        "😠": [164],
+        "😮": [165],
+        "🙄": [166],
+        "😲": [167],
+        "💡": [168],
+        "😟": [169],
+        "🥀": [170],
+        "😤": [171],
+        "😕": [172],
+        "📛": [173],
+    }
+
+    # Add VAD phonemes next, starting from the next available ID
     existing_ids = {i for v in codepoints_map.values() for i in v}
     custom_id = max(existing_ids) + 1
-    codepoints_map["‽"] = [custom_id]
-    custom_id += 1
 
-    max_phonemes = get_max_phonemes()
-    for custom_phoneme in set(emotion_to_emoji.values()):
-        assert (
-            custom_id < max_phonemes
-        ), f"Too many phonemes. Attempted to add custom phonemes beyond the current max: {max_phonemes}."
-        codepoints_map[custom_phoneme] = [custom_id]
-        custom_id += 1
+    codepoints_map["‽"] = [custom_id]
+
+    # Inject fixed emoji IDs
+    for emoji, id_list in fixed_emoji_ids.items():
+        codepoints_map[emoji] = id_list
+
+    custom_id += len(fixed_emoji_ids) + 1
 
     for custom_phoneme in vad_phonemes:
         assert (
-            custom_id < max_phonemes
-        ), f"Too many phonemes. Attempted to add custom phonemes beyond the current max: {max_phonemes}."
+            custom_id < get_max_phonemes()
+        ), f"Too many phonemes. Attempted to add custom phonemes beyond the current max."
         codepoints_map[custom_phoneme] = [custom_id]
         custom_id += 1
 
