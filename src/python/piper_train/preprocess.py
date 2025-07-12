@@ -537,6 +537,20 @@ def main() -> None:
         else:
             train_dataset.append(utt_dict)
 
+    speaker_counts = Counter(utt["speaker"] for utt in train_dataset)
+    cap = min(count for speaker, count in speaker_counts.items())
+
+    # TODO: Figure out a better way to keep sample counts about the same for each speaker and avoid having one speaker make up too large of a percent
+    for speaker, speaker_count in speaker_counts.items():
+        if speaker_count > cap:
+            speaker_utts = [utt for utt in train_dataset if utt["speaker"] == speaker]
+            keep = random.sample(speaker_utts, cap)
+            train_dataset = [
+                utt for utt in train_dataset if utt["speaker"] != speaker
+            ] + keep
+
+    speaker_counts = Counter(utt["speaker"] for utt in train_dataset)
+
     with open(args.output_dir / "dataset.jsonl", "w", encoding="utf-8") as dataset_file:
         for utt_dict in train_dataset:
             json.dump(
