@@ -1,0 +1,70 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Train Piper Model",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "piper_train",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/piper/src/python",
+                "NUMBA_CACHE_DIR": ".numba_cache"
+            },
+            "args": [
+                "--dataset-dir",
+                "/media/mitch/DATA5/datasets/.cache/wumbospeech0",
+                // "--default_root_dir", "/home/containeruser/wfloat/dataset/data/context/spongebob_base/lightning_logs/version_5",
+                "--accelerator",
+                "gpu",
+                "--devices",
+                "1",
+                "--batch-size",
+                "32",
+                "--validation-split",
+                "0.05",
+                "--num-test-examples",
+                "0",
+                "--max_epochs",
+                "2000",
+                "--resume_from_checkpoint",
+                "/media/mitch/DATA5/datasets/.cache/wumbospeech0/lightning_logs/version_0/checkpoints/epoch=486-step=128568.ckpt",
+                // "/home/containeruser/wfloat/dataset/data/context/spongebob_base_v0.4/lightning_logs/version_0/checkpoints/epoch=74-step=69150.ckpt",
+                // "--resume_from_single_speaker_checkpoint", "/home/mitch/dev/piper/epoch=2218-step=838782.ckpt",
+                "--checkpoint-epochs",
+                "1",
+                "--precision",
+                "32",
+                "--quality",
+                "high",
+                "--max-phoneme-ids",
+                "400",
+                // "--learning-rate", "1e-9",
+                // "--lr", "1e-9",
+                // "--freeze-pretrained",
+            ]
+        },
+        {
+            "name": "Infer Piper Output",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "piper_train.infer",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/piper/src/python"
+            },
+            "args": [
+                "--dataset",
+                "/home/mitch/dev/wfloat/dataset/news_monologue.jsonl",
+                "--sample-rate",
+                "22050",
+                "--checkpoint",
+                // "/media/mitch/DATA5/datasets/.cache/wumbospeech0/lightning_logs/version_1/checkpoints/epoch=867-step=229152.ckpt",
+                // "/media/mitch/DATA5/datasets/.cache/wumbospeech0/lightning_logs/version_1/checkpoints/epoch=826-step=218328.ckpt",
+                "/media/mitch/DATA5/datasets/.cache/wumbospeech0/lightning_logs/version_1/checkpoints/epoch=800-step=211464.ckpt",
+                "--output-dir",
+                "/home/mitch/dev/piper/out"
+            ]
+        }
+    ]
+}
