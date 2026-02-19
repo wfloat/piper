@@ -3,7 +3,6 @@ import argparse
 import json
 import logging
 import math
-import sys
 import time
 from pathlib import Path
 
@@ -21,6 +20,9 @@ def main():
     logging.basicConfig(level=logging.DEBUG)
     parser = argparse.ArgumentParser(prog="piper_train.infer_onnx")
     parser.add_argument("--model", required=True, help="Path to model (.onnx)")
+    parser.add_argument(
+        "--dataset", required=True, help="Path to dataset jsonl file (.jsonl)"
+    )
     parser.add_argument("--output-dir", required=True, help="Path to write WAV files")
     parser.add_argument("--sample-rate", type=int, default=22050)
     parser.add_argument("--noise-scale", type=float, default=0.667)
@@ -28,6 +30,7 @@ def main():
     parser.add_argument("--length-scale", type=float, default=1.0)
     args = parser.parse_args()
 
+    args.dataset = Path(args.dataset)
     args.output_dir = Path(args.output_dir)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -48,58 +51,59 @@ def main():
     # )[0].squeeze((0, 1))
     # bias_spec, _ = transform(bias_audio)
 
-    for i, line in enumerate(sys.stdin):
-        line = line.strip()
-        if not line:
-            continue
+    with args.dataset.open("r", encoding="utf-8") as dataset_file:
+        for i, line in enumerate(dataset_file):
+            line = line.strip()
+            if not line:
+                continue
 
-        utt = json.loads(line)
-        # utt_id = utt["id"]
-        utt_id = str(i)
-        phoneme_ids = utt["phoneme_ids"]
-        speaker_id = utt.get("speaker_id")
+            utt = json.loads(line)
+            # utt_id = utt["id"]
+            utt_id = str(i)
+            phoneme_ids = utt["phoneme_ids"]
+            speaker_id = utt.get("speaker_id")
 
-        text = np.expand_dims(np.array(phoneme_ids, dtype=np.int64), 0)
-        text_lengths = np.array([text.shape[1]], dtype=np.int64)
-        scales = np.array(
-            [args.noise_scale, args.length_scale, args.noise_scale_w],
-            dtype=np.float32,
-        )
-        sid = None
+            text = np.expand_dims(np.array(phoneme_ids, dtype=np.int64), 0)
+            text_lengths = np.array([text.shape[1]], dtype=np.int64)
+            scales = np.array(
+                [args.noise_scale, args.length_scale, args.noise_scale_w],
+                dtype=np.float32,
+            )
+            sid = None
 
-        if speaker_id is not None:
-            sid = np.array([speaker_id], dtype=np.int64)
+            if speaker_id is not None:
+                sid = np.array([speaker_id], dtype=np.int64)
 
-        start_time = time.perf_counter()
-        audio = model.run(
-            None,
-            {
-                "input": text,
-                "input_lengths": text_lengths,
-                "scales": scales,
-                "sid": sid,
-            },
-        )[0].squeeze((0, 1))
-        # audio = denoise(audio, bias_spec, 10)
-        audio = audio_float_to_int16(audio.squeeze())
-        end_time = time.perf_counter()
+            start_time = time.perf_counter()
+            audio = model.run(
+                None,
+                {
+                    "input": text,
+                    "input_lengths": text_lengths,
+                    "scales": scales,
+                    "sid": sid,
+                },
+            )[0].squeeze((0, 1))
+            # audio = denoise(audio, bias_spec, 10)
+            audio = audio_float_to_int16(audio.squeeze())
+            end_time = time.perf_counter()
 
-        audio_duration_sec = audio.shape[-1] / args.sample_rate
-        infer_sec = end_time - start_time
-        real_time_factor = (
-            infer_sec / audio_duration_sec if audio_duration_sec > 0 else 0.0
-        )
+            audio_duration_sec = audio.shape[-1] / args.sample_rate
+            infer_sec = end_time - start_time
+            real_time_factor = (
+                infer_sec / audio_duration_sec if audio_duration_sec > 0 else 0.0
+            )
 
-        _LOGGER.debug(
-            "Real-time factor for %s: %0.2f (infer=%0.2f sec, audio=%0.2f sec)",
-            i + 1,
-            real_time_factor,
-            infer_sec,
-            audio_duration_sec,
-        )
+            _LOGGER.debug(
+                "Real-time factor for %s: %0.2f (infer=%0.2f sec, audio=%0.2f sec)",
+                i + 1,
+                real_time_factor,
+                infer_sec,
+                audio_duration_sec,
+            )
 
-        output_path = args.output_dir / f"{utt_id}.wav"
-        write_wav(str(output_path), args.sample_rate, audio)
+            output_path = args.output_dir / f"{utt_id}.wav"
+            write_wav(str(output_path), args.sample_rate, audio)
 
 
 def denoise(
