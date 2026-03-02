@@ -1,15 +1,109 @@
 import argparse
 import json
 import logging
+import shlex
+import subprocess
 from pathlib import Path
+from typing import Optional, Tuple
 
 import torch
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import Callback, ModelCheckpoint
 
 from .vits.lightning import VitsModel
 
 _LOGGER = logging.getLogger(__package__)
+DATASET_REFRESH_FULL_MODE = "full"
+DATASET_REFRESH_TRAIN_MODE = "train"
+
+
+def _run_dataset_refresh(command: str, mode_arg: str, cwd: Path):
+    refresh_command = [*shlex.split(command), mode_arg]
+    _LOGGER.info("Running dataset refresh command (%s): %s", mode_arg, refresh_command)
+    subprocess.run(refresh_command, check=True, cwd=str(cwd))
+
+
+def _resolve_manifest_path(
+    dataset_dir: Path, path_str: Optional[str], default_name: str
+) -> Path:
+    if path_str:
+        path = Path(path_str)
+        if not path.is_absolute():
+            path = dataset_dir / path
+        return path
+
+    return dataset_dir / default_name
+
+
+def _resolve_split_manifests(args) -> Optional[Tuple[Path, Path, Path]]:
+    has_any_split_manifest = any(
+        [args.train_manifest, args.val_manifest, args.test_manifest]
+    )
+    if has_any_split_manifest and not all(
+        [args.train_manifest, args.val_manifest, args.test_manifest]
+    ):
+        raise ValueError(
+            "--train-manifest, --val-manifest, and --test-manifest must be set together"
+        )
+
+    if not has_any_split_manifest and not args.dataset_refresh_command:
+        return None
+
+    return (
+        _resolve_manifest_path(args.dataset_dir, args.train_manifest, "train.jsonl"),
+        _resolve_manifest_path(args.dataset_dir, args.val_manifest, "val.jsonl"),
+        _resolve_manifest_path(args.dataset_dir, args.test_manifest, "test.jsonl"),
+    )
+
+
+def _validate_split_manifests(manifests: Tuple[Path, Path, Path]):
+    for split_manifest in manifests:
+        if not split_manifest.exists():
+            raise FileNotFoundError(f"Missing split manifest: {split_manifest}")
+
+
+class DatasetRefreshCallback(Callback):
+    def __init__(self, command: str, cwd: Path):
+        super().__init__()
+        self.command = command
+        self.cwd = cwd
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        if (trainer.max_epochs is not None) and (trainer.max_epochs > 0) and (
+            trainer.current_epoch + 1 >= trainer.max_epochs
+        ):
+            return
+
+        if hasattr(pl_module, "drop_train_dataset"):
+            pl_module.drop_train_dataset()
+
+        refresh_error = None
+        if trainer.is_global_zero:
+            try:
+                _run_dataset_refresh(
+                    self.command, DATASET_REFRESH_TRAIN_MODE, cwd=self.cwd
+                )
+            except Exception as err:
+                refresh_error = f"{type(err).__name__}: {err}"
+
+        world_size = getattr(trainer, "world_size", 1)
+        if world_size > 1:
+            refresh_error = trainer.strategy.broadcast(refresh_error, src=0)
+
+        if refresh_error is not None:
+            raise RuntimeError(f"Dataset refresh command failed: {refresh_error}")
+
+        if world_size > 1:
+            trainer.strategy.barrier("dataset_refresh_done")
+
+        if not hasattr(pl_module, "reload_train_dataset"):
+            raise RuntimeError(
+                "Dataset refresh callback requires model.reload_train_dataset()"
+            )
+        pl_module.reload_train_dataset()
+
+        if world_size > 1:
+            trainer.strategy.barrier("dataset_reload_done")
 
 
 def main():
@@ -34,6 +128,22 @@ def main():
         "--resume_from_single_speaker_checkpoint",
         help="For multi-speaker models only. Converts a single-speaker checkpoint to multi-speaker and resumes training",
     )
+    parser.add_argument(
+        "--dataset-refresh-command",
+        help="Command that regenerates dataset manifests; mode argument is appended",
+    )
+    parser.add_argument(
+        "--train-manifest",
+        help="Path to train split manifest (JSONL). Relative paths are under --dataset-dir",
+    )
+    parser.add_argument(
+        "--val-manifest",
+        help="Path to val split manifest (JSONL). Relative paths are under --dataset-dir",
+    )
+    parser.add_argument(
+        "--test-manifest",
+        help="Path to test split manifest (JSONL). Relative paths are under --dataset-dir",
+    )
     Trainer.add_argparse_args(parser)
     VitsModel.add_model_specific_args(parser)
     parser.add_argument("--seed", type=int, default=1234)
@@ -49,6 +159,24 @@ def main():
 
     config_path = args.dataset_dir / "config.json"
     dataset_path = args.dataset_dir / "dataset.jsonl"
+    split_manifests = _resolve_split_manifests(args)
+
+    if args.dataset_refresh_command:
+        _run_dataset_refresh(
+            args.dataset_refresh_command,
+            DATASET_REFRESH_FULL_MODE,
+            cwd=args.dataset_dir,
+        )
+
+        reload_every = getattr(args, "reload_dataloaders_every_n_epochs", 0) or 0
+        if reload_every < 1:
+            args.reload_dataloaders_every_n_epochs = 1
+            _LOGGER.info(
+                "Set reload_dataloaders_every_n_epochs=1 for per-epoch dataset refresh"
+            )
+
+    if split_manifests is not None:
+        _validate_split_manifests(split_manifests)
 
     with open(config_path, "r", encoding="utf-8") as config_file:
         # See preprocess.py for format
@@ -57,17 +185,27 @@ def main():
         num_speakers = int(config["num_speakers"])
         sample_rate = int(config["audio"]["sample_rate"])
 
-    trainer = Trainer.from_argparse_args(args)
+    callbacks = []
     if args.checkpoint_epochs is not None:
-        trainer.callbacks = [
+        callbacks.append(
             ModelCheckpoint(
                 every_n_epochs=args.checkpoint_epochs,
                 save_top_k=-1,
             )
-        ]
+        )
         _LOGGER.debug(
             "Checkpoints will be saved every %s epoch(s)", args.checkpoint_epochs
         )
+
+    if args.dataset_refresh_command:
+        callbacks.append(
+            DatasetRefreshCallback(
+                command=args.dataset_refresh_command,
+                cwd=args.dataset_dir,
+            )
+        )
+
+    trainer = Trainer.from_argparse_args(args, callbacks=callbacks)
 
     dict_args = vars(args)
     if args.quality == "x-low":
@@ -86,13 +224,21 @@ def main():
         dict_args["upsample_initial_channel"] = 512
         dict_args["upsample_kernel_sizes"] = (16, 16, 4, 4)
 
-    model = VitsModel(
+    model_kwargs = dict(
         num_symbols=num_symbols,
         num_speakers=num_speakers,
         sample_rate=sample_rate,
-        dataset=[dataset_path],
         **dict_args,
     )
+    if split_manifests is None:
+        model_kwargs["dataset"] = [dataset_path]
+    else:
+        train_manifest, val_manifest, test_manifest = split_manifests
+        model_kwargs["train_dataset"] = [train_manifest]
+        model_kwargs["val_dataset"] = [val_manifest]
+        model_kwargs["test_dataset"] = [test_manifest]
+
+    model = VitsModel(**model_kwargs)
 
     if args.resume_from_single_speaker_checkpoint:
         assert (
@@ -107,6 +253,9 @@ def main():
         model_single = VitsModel.load_from_checkpoint(
             args.resume_from_single_speaker_checkpoint,
             dataset=None,
+            train_dataset=None,
+            val_dataset=None,
+            test_dataset=None,
         )
         g_dict = model_single.model_g.state_dict()
         for key in list(g_dict.keys()):

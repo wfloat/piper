@@ -1,3 +1,4 @@
+import gc
 import logging
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
@@ -58,6 +59,9 @@ class VitsModel(pl.LightningModule):
         segment_size: int = 8192,
         # training
         dataset: Optional[List[Union[str, Path]]] = None,
+        train_dataset: Optional[List[Union[str, Path]]] = None,
+        val_dataset: Optional[List[Union[str, Path]]] = None,
+        test_dataset: Optional[List[Union[str, Path]]] = None,
         learning_rate: float = 2e-4,
         betas: Tuple[float, float] = (0.8, 0.99),
         eps: float = 1e-9,
@@ -112,7 +116,29 @@ class VitsModel(pl.LightningModule):
         self._train_dataset: Optional[Dataset] = None
         self._val_dataset: Optional[Dataset] = None
         self._test_dataset: Optional[Dataset] = None
-        self._load_datasets(validation_split, num_test_examples, max_phoneme_ids)
+        self._max_phoneme_ids = max_phoneme_ids
+
+        if any(
+            split is not None
+            for split in (
+                self.hparams.train_dataset,
+                self.hparams.val_dataset,
+                self.hparams.test_dataset,
+            )
+        ):
+            if not (
+                self.hparams.train_dataset
+                and self.hparams.val_dataset
+                and self.hparams.test_dataset
+            ):
+                raise ValueError(
+                    "train_dataset, val_dataset, and test_dataset must all be set "
+                    "when using fixed split manifests"
+                )
+
+            self._load_explicit_datasets(max_phoneme_ids=max_phoneme_ids)
+        else:
+            self._load_datasets(validation_split, num_test_examples, max_phoneme_ids)
 
         # State kept between training optimizers
         self._y = None
@@ -137,6 +163,39 @@ class VitsModel(pl.LightningModule):
         self._train_dataset, self._test_dataset, self._val_dataset = random_split(
             full_dataset, [train_set_size, num_test_examples, valid_set_size]
         )
+
+    def _load_explicit_datasets(self, max_phoneme_ids: Optional[int] = None):
+        self._train_dataset = PiperDataset(
+            self.hparams.train_dataset, max_phoneme_ids=max_phoneme_ids
+        )
+        self._val_dataset = PiperDataset(
+            self.hparams.val_dataset, max_phoneme_ids=max_phoneme_ids
+        )
+        self._test_dataset = PiperDataset(
+            self.hparams.test_dataset, max_phoneme_ids=max_phoneme_ids
+        )
+
+    def reload_train_dataset(self):
+        if self.hparams.train_dataset is None:
+            raise RuntimeError(
+                "reload_train_dataset requires train_dataset to be configured"
+            )
+
+        self.drop_train_dataset()
+
+        self._train_dataset = PiperDataset(
+            self.hparams.train_dataset, max_phoneme_ids=self._max_phoneme_ids
+        )
+        _LOGGER.info(
+            "Reloaded training dataset from %s (%s utterance(s))",
+            self.hparams.train_dataset,
+            len(self._train_dataset),
+        )
+
+    def drop_train_dataset(self):
+        # Release references to old dataset so workers can reclaim memory.
+        self._train_dataset = None
+        gc.collect()
 
     def forward(self, text, text_lengths, scales, sid=None):
         noise_scale = scales[0]
