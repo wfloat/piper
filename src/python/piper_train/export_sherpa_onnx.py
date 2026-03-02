@@ -2,19 +2,15 @@
 
 #!/usr/bin/env python3
 import argparse
+import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
+import onnx
 import torch
 
 from .vits.lightning import VitsModel
-
-import json
-import os
-from typing import Any, Dict
-
-import onnx
 
 def add_meta_data(filename: str, meta_data: Dict[str, Any]):
     """Add meta data to an ONNX model. It is changed in-place.
@@ -26,6 +22,10 @@ def add_meta_data(filename: str, meta_data: Dict[str, Any]):
         Key-value pairs.
     """
     model = onnx.load(filename)
+
+    while len(model.metadata_props):
+        model.metadata_props.pop()
+
     for key, value in meta_data.items():
         meta = model.metadata_props.add()
         meta.key = key
@@ -40,14 +40,41 @@ def load_config(model_config_path: str):
     return config
 
 
-def generate_tokens(config, out_path):
+def _to_int_token_id(value: Any) -> Optional[int]:
+    if isinstance(value, list):
+        if not value:
+            return None
+        value = value[0]
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _token_id_from_map(id_map: Dict[str, Any], symbol: str) -> Optional[int]:
+    if symbol not in id_map:
+        return None
+
+    return _to_int_token_id(id_map[symbol])
+
+
+def generate_tokens(config: Dict[str, Any], out_path: Path):
     id_map = config["phoneme_id_map"]
     with open(out_path, "w", encoding="utf-8") as f:
         for s, i in id_map.items():
-            f.write(f"{s} {i[0]}\n")
+            if s == "\n":
+                continue
+
+            token_id = _to_int_token_id(i)
+            if token_id is None:
+                continue
+
+            f.write(f"{s} {token_id}\n")
+
     print("Generated tokens.txt")
 
-_LOGGER = logging.getLogger("piper_train.export_onnx")
+_LOGGER = logging.getLogger("piper_train.export_sherpa_onnx")
 
 OPSET_VERSION = 15
 
@@ -60,6 +87,13 @@ def main() -> None:
     parser.add_argument("--checkpoint", help="Path to model checkpoint (.ckpt)")
     parser.add_argument("--output", help="Path to output model (.onnx)")
     parser.add_argument("--config_path", help="Path to model config.json (.onnx)")
+    parser.add_argument(
+        "--use-eos-bos",
+        type=int,
+        choices=[0, 1],
+        required=True,
+        help="Whether Wfloat text frontend should wrap tokens with BOS/PAD/EOS.",
+    )
 
     parser.add_argument(
         "--debug", action="store_true", help="Print DEBUG messages to the console"
@@ -146,15 +180,53 @@ def main() -> None:
     config = load_config(args.config_path)
     tokens_path = args.output.parent / f"{args.output.stem}_tokens.txt"
     generate_tokens(config, tokens_path)
+
+    phoneme_id_map = config.get("phoneme_id_map", {})
+    use_eos_bos = int(args.use_eos_bos)
+
+    language = config.get("language", {})
+    if isinstance(language, dict):
+        language = language.get("code", "")
+
+    espeak = config.get("espeak", {})
+    if isinstance(espeak, dict):
+        voice = espeak.get("voice", "")
+    else:
+        voice = ""
+
+    audio = config.get("audio", {})
+    if isinstance(audio, dict):
+        sample_rate = int(audio.get("sample_rate", 22050))
+    else:
+        sample_rate = 22050
+
+    if sample_rate == 22500:
+        sample_rate = 22050
+
     meta_data = {
         "model_type": "vits",
         "comment": "piper",  # must be piper for models from piper
-        "language": config["language"]["code"],
-        "voice": config["espeak"]["voice"],  # e.g., en-us
+        "language": language,
+        "voice": voice,  # e.g., en-us
         "has_espeak": 1,
-        "n_speakers": config["num_speakers"],
-        "sample_rate": config["audio"]["sample_rate"],
+        "n_speakers": int(config.get("num_speakers", 0)),
+        "sample_rate": sample_rate,
+        "add_blank": int(config.get("add_blank", 0)),
+        "use_eos_bos": use_eos_bos, 
     }
+
+    pad_id = _token_id_from_map(phoneme_id_map, "_")
+    if pad_id is not None:
+        meta_data["pad_id"] = pad_id
+
+    bos_id = _token_id_from_map(phoneme_id_map, "^")
+    if bos_id is not None:
+        meta_data["bos_id"] = bos_id
+
+    eos_id = _token_id_from_map(phoneme_id_map, "$")
+    if eos_id is not None:
+        meta_data["eos_id"] = eos_id
+
     add_meta_data(args.output, meta_data)
 
 # -----------------------------------------------------------------------------
