@@ -17,9 +17,14 @@ DATASET_REFRESH_FULL_MODE = "full"
 DATASET_REFRESH_TRAIN_MODE = "train"
 
 
-def _run_dataset_refresh(command: str, mode_arg: str, cwd: Path):
-    refresh_command = [*shlex.split(command), mode_arg]
-    _LOGGER.info("Running dataset refresh command (%s): %s", mode_arg, refresh_command)
+def _run_dataset_refresh(command: str, mode_arg: str, epoch_num: int, cwd: Path):
+    refresh_command = [*shlex.split(command), mode_arg, str(epoch_num)]
+    _LOGGER.info(
+        "Running dataset refresh command (%s %s): %s",
+        mode_arg,
+        epoch_num,
+        refresh_command,
+    )
     subprocess.run(refresh_command, check=True, cwd=str(cwd))
 
 
@@ -63,16 +68,34 @@ def _validate_split_manifests(manifests: Tuple[Path, Path, Path]):
 
 
 class DatasetRefreshCallback(Callback):
-    def __init__(self, command: str, cwd: Path):
+    def __init__(self, command: str, cwd: Path, refresh_every_n_epochs: int):
         super().__init__()
         self.command = command
         self.cwd = cwd
+        self.refresh_every_n_epochs = refresh_every_n_epochs
 
     def on_train_epoch_end(self, trainer, pl_module):
         if (trainer.max_epochs is not None) and (trainer.max_epochs > 0) and (
             trainer.current_epoch + 1 >= trainer.max_epochs
         ):
             return
+
+        completed_epochs = trainer.current_epoch + 1
+        if completed_epochs % self.refresh_every_n_epochs != 0:
+            if trainer.is_global_zero:
+                _LOGGER.info(
+                    "Skipping dataset refresh after epoch %s (interval=%s)",
+                    completed_epochs,
+                    self.refresh_every_n_epochs,
+                )
+            return
+
+        if trainer.is_global_zero:
+            _LOGGER.info(
+                "Refreshing dataset after epoch %s (interval=%s)",
+                completed_epochs,
+                self.refresh_every_n_epochs,
+            )
 
         if hasattr(pl_module, "drop_train_dataset"):
             pl_module.drop_train_dataset()
@@ -81,7 +104,10 @@ class DatasetRefreshCallback(Callback):
         if trainer.is_global_zero:
             try:
                 _run_dataset_refresh(
-                    self.command, DATASET_REFRESH_TRAIN_MODE, cwd=self.cwd
+                    self.command,
+                    DATASET_REFRESH_TRAIN_MODE,
+                    completed_epochs,
+                    cwd=self.cwd,
                 )
             except Exception as err:
                 refresh_error = f"{type(err).__name__}: {err}"
@@ -133,6 +159,12 @@ def main():
         help="Command that regenerates dataset manifests; mode argument is appended",
     )
     parser.add_argument(
+        "--dataset-refresh-every-n-epochs",
+        type=int,
+        default=10,
+        help="Refresh training dataset every N epochs (default: 10)",
+    )
+    parser.add_argument(
         "--train-manifest",
         help="Path to train split manifest (JSONL). Relative paths are under --dataset-dir",
     )
@@ -162,9 +194,13 @@ def main():
     split_manifests = _resolve_split_manifests(args)
 
     if args.dataset_refresh_command:
+        if args.dataset_refresh_every_n_epochs < 1:
+            raise ValueError("--dataset-refresh-every-n-epochs must be >= 1")
+
         _run_dataset_refresh(
             args.dataset_refresh_command,
             DATASET_REFRESH_FULL_MODE,
+            1,
             cwd=args.dataset_dir,
         )
 
@@ -202,6 +238,7 @@ def main():
             DatasetRefreshCallback(
                 command=args.dataset_refresh_command,
                 cwd=args.dataset_dir,
+                refresh_every_n_epochs=args.dataset_refresh_every_n_epochs,
             )
         )
 
